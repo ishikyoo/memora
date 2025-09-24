@@ -1,0 +1,42 @@
+{
+	"schemaVersion": 1,
+	"id": "${modid}",
+	"version": "${version}",
+	"name": "${modname}",
+	"description": "An API for creating and managing in-memory resource packs in Minecraft.",
+	"authors": [
+		"iShikyoo"
+	],
+	"contact": {
+		"homepage": "${homepage}",
+		"sources": "${sources}",
+		"issues": "${issues}"
+	},
+	"license": "LGPL-3.0-only",
+	"icon": "assets/memora/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"com.ishikyoo.memora.internal.Memora"
+		]
+	},
+	"mixins": [
+		"memora.mixins.json"
+	],
+	"depends": {
+		"fabricloader": "*",
+		"minecraft": "*",
+		"java": "*"
+	},
+	"suggests": {
+		"modmenu": "*"
+	},
+	"custom": {
+		"modmenu": {
+			"links": {
+				"Modrinth": "${modrinth}",
+				"CurseForge": "${curseforge}"
+			}
+		}
+	}
+}

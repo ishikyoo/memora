@@ -1,0 +1,14 @@
+{
+	"required": true,
+	"package": "com.ishikyoo.memora.mixin",
+	"compatibilityLevel": "JAVA_21",
+	"mixins": [
+		"PackRepositoryMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	},
+	"overwrites": {
+		"requireAnnotations": true
+	}
+}

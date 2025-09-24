@@ -1,0 +1,413 @@
+import se.bjurr.gitchangelog.plugin.gradle.GitChangelogTask
+import java.security.MessageDigest
+
+plugins {
+	id 'fabric-loom' version "${loom_version}"
+	id 'com.modrinth.minotaur' version '2.+'
+	id 'se.bjurr.gitchangelog.git-changelog-gradle-plugin' version "${git_changelog_version}"
+}
+
+// === Constants & Helpers ===
+
+def ALLOWED_PUBLISH_CHANNELS = ['dev', 'snap', 'alpha', 'beta', 'pre', 'rc', 'release'].asImmutable()
+
+static boolean isCI() {
+	def ciEnvs = ['CI', 'GITHUB_ACTIONS', 'GITLAB_CI', 'TRAVIS']
+	return System.getenv().keySet().any { it in ciEnvs }
+}
+static def assertCIEnvironment(String msg) {
+	if (!isCI()) {
+		throw new GradleException(msg)
+	}
+}
+static def assertCIOnlyTask(String task) {
+	assertCIEnvironment("The "+ task + " task must not be run when not in a CI environment.")
+}
+static def assertPublishOnlyTask(String task, String channel) {
+	assertCIOnlyTask(task)
+	if (channel == 'dev') {
+		assertCIEnvironment("The " + task + " task must not be run when publish channel is set to 'dev'.")
+	}
+}
+
+static def getGitShortHash() {
+	try {
+		def proc = ['git', 'rev-parse', '--short=8', 'HEAD'].execute()
+		proc.waitFor()
+		if (proc.exitValue() != 0) {
+			throw new GradleException("Git command failed: ${proc.err.text.trim()}")
+		}
+		def hash = proc.in.text.trim()
+		if (!hash) throw new GradleException("Empty git hash returned")
+		return hash
+	} catch (Exception e) {
+		throw new GradleException("Failed to retrieve git commit hash: ${e.message}", e)
+	}
+}
+
+static def getLocalShortHash(modId, modVersion, publishChannel, mcVersion) {
+	def inputString = "${modId}${modVersion}${publishChannel}${mcVersion}"
+	def input = inputString.getBytes("UTF-8")
+	def digest = MessageDigest.getInstance("SHA-256")
+	def hash = digest.digest(input)
+	int hashInt = ((hash[0] & 0xFF) << 24) |
+			((hash[1] & 0xFF) << 16) |
+			((hash[2] & 0xFF) << 8)  |
+			(hash[3] & 0xFF)
+	return String.format("%08x", hashInt)
+}
+
+static def formatVersion(String name, String version) {
+	version.replaceAll(/(\d+\.\d+\.\d+)-([a-zA-Z_]+)\.(\d+)\+(\d+\.\d+\.\d+)/) { _, _modVersion, _rawChannel, _revision, _mcVersion ->
+		if (_rawChannel == "snap") {
+			return "${name}: ${_modVersion} (Snapshot ${_revision}) for Minecraft ${minecraft_version}"
+		} else if (_rawChannel == "pre") {
+			return "${name}: ${_modVersion} (Pre-Release ${_revision}) for Minecraft ${_mcVersion}"
+		} else if (_rawChannel == "rc") {
+			return "${name}: ${_modVersion} (Release Candidate ${_revision}) for Minecraft ${_mcVersion}"
+		} else {
+			def channel = _rawChannel.replace('_', ' ')
+				.split(' ')
+				.collect { it.capitalize() }
+				.join(' ')
+			return "${name}: ${_modVersion} (${channel} ${_revision}) for Minecraft ${_mcVersion}"
+		}
+	}
+}
+
+// === Project Properties & Configuration ===
+
+def env = System.getenv()
+
+def requireProperty = { String property, boolean optional ->
+	if (!project.hasProperty(property) || project.property(property).toString().trim().isEmpty()) {
+		if (!optional) { throw new GradleException("Missing required project property: '${property}'") }
+		return null
+	}
+	return project.property(property).toString().trim()
+}
+
+def requireIntProperty = { String property, boolean optional ->
+	def rawValue = requireProperty(property, optional)
+	if (optional && !rawValue) {
+		return null
+	}
+	int prop
+	try {
+		prop = rawValue.toInteger()
+	} catch (ignored) {
+		throw new GradleException("Project property '${property}' must be an integer, but was: '${rawValue}'")
+	}
+	return prop
+}
+
+def requireIntPropertyRange = { String property, int min, int max, boolean optional ->
+	def prop = requireIntProperty(property, optional)
+	if (optional && !prop) {
+		return null
+	}
+	if (prop < min || prop > max) {
+		throw new GradleException("Project property '${property}' must be between ${min} and ${max} (inclusive), but was: ${prop}")
+	}
+	return prop
+}
+
+def requireRestrictProperty = { String key, List<String> allowed ->
+	if (!project.hasProperty(key) || project.property(key).toString().trim().isEmpty()) {
+		throw new GradleException("Missing required project property: '${key}'")
+	}
+	def value = project.property(key).toString().trim()
+	if (!allowed.contains(value)) {
+		throw new GradleException("Invalid value for project property '${key}': '${value}'. Expected one of: ${allowed}")
+	}
+	return value
+}
+
+def isCI = isCI()
+
+def modName = requireProperty("mod_name", false)
+def modId = requireProperty("mod_id", false)
+def archivesBaseName = requireProperty("archives_base_name", false)
+def loaderVersion = requireProperty("loader_version", false)
+def fabricVersion = requireProperty("fabric_version", false)
+def modmenuVersion = requireProperty("modmenu_version", false)
+def mavenGroup = requireProperty("maven_group", false)
+def modVersion = requireProperty("mod_version", false)
+def mcVersion = requireProperty("minecraft_version", false)
+def supportedMcVersions = requireProperty("supported_minecraft_versions", false);
+
+def publishChannel = requireRestrictProperty("publish_channel", ALLOWED_PUBLISH_CHANNELS)
+def publishHasVersion = (publishChannel == 'dev' || publishChannel == 'snap' || publishChannel == 'release')
+def publishVersion = publishHasVersion ? requireIntPropertyRange("publish_version", 1, 32, true) : requireIntPropertyRange("publish_version", 1, 32, false)
+def modrinthToken = env['MODRINTH_TOKEN']?.trim()
+def curseForgeToken = env['CURSEFORGE_TOKEN']?.trim()
+def shouldPublishToGitHub = isCI ? requireProperty("publish_github", false) == 'true' : false
+def shouldPublishToModrinth = {
+	if (!isCI || !shouldPublishToGitHub || publishChannel == "dev" || publishChannel == "snap") { return false }
+	if (requireProperty("publish_modrinth", false) == 'true' && !modrinthToken) {
+		logger.warn("\u001B[33m[WARNING] Publishing to Modrinth is enabled, but MODRINTH_TOKEN is missing. Publishing to Modrinth will be skipped.\u001B[0m")
+		return false
+	}
+	return true
+}.call()
+def shouldPublishToCurseForge = {
+	if (!isCI || !shouldPublishToGitHub) { return false }
+	if (requireProperty("publish_curseforge", false) == 'true' && !curseForgeToken) {
+		logger.warn("\u001B[33m[WARNING] Publishing to CurseForge is enabled, but CURSEFORGE_TOKEN is missing. Publishing to CurseForge will be skipped.\u001B[0m")
+		return false
+	}
+	return true
+}.call()
+def modrinthPublishChannel = {
+	if (!shouldPublishToModrinth) { return "none" }
+	if (publishChannel == "release") { return "release" }
+	if (publishChannel == "beta" || publishChannel == "pre" || publishChannel == "rc") { return "beta" }
+	if (publishChannel == "alpha") { return "alpha" }
+}.call()
+def githubLink = requireProperty("publish_github_link", false)
+def githubIssuesLink = "${githubLink}/issues"
+def modrinthLink = shouldPublishToModrinth ? requireProperty("publish_modrinth_link", false) : requireProperty("publish_modrinth_link", true)
+def curseForgeLink = shouldPublishToCurseForge ? requireProperty("publish_curseforge_link", false) : requireProperty("publish_curseforge_link", true)
+
+def buildEnv = {
+	if (isCI) { return "ci" }
+	else
+	{ return "local" }
+}.call()
+
+def publishHasHashId = (publishChannel == 'dev' || publishChannel == 'snap')
+
+def buildHash = {
+	if (!publishHasHashId) { return null }
+	if (isCI) { return getGitShortHash() }
+	else
+	{ return getLocalShortHash(modId, modVersion, publishChannel, mcVersion) }
+}.call()
+
+def buildId = {
+	switch (publishChannel) {
+		case 'dev':
+			return "-dev+${buildEnv}.${buildHash}"
+		case 'snap':
+			return "-snap+${buildEnv}.${buildHash}"
+		case 'release':
+			return "+${mcVersion}"
+		default:
+			return "-${publishChannel}.${publishVersion}+${mcVersion}"
+	}
+}.call()
+
+version = "${modVersion}${buildId}"
+
+def formatedVersion = formatVersion(modName, version)
+
+group = mavenGroup
+base.archivesName = archivesBaseName
+
+// === Repositories ===
+
+repositories {
+	maven {
+		name = "Modrinth"
+		url = uri("https://api.modrinth.com/maven")
+	}
+}
+
+// === Dependencies ===
+
+dependencies {
+	minecraft "com.mojang:minecraft:${mcVersion}"
+	mappings loom.officialMojangMappings()
+	modImplementation "net.fabricmc:fabric-loader:${loaderVersion}"
+	modImplementation "net.fabricmc.fabric-api:fabric-api:${fabricVersion}"
+	modCompileOnlyApi "maven.modrinth:modmenu:${modmenuVersion}"
+	modRuntimeOnly "maven.modrinth:modmenu:${modmenuVersion}"
+}
+
+// === Process Resources ===
+
+processResources {
+	def modrinthResLink = !modrinthLink ? "unknown" : modrinthLink
+	def curseForgeResLink = !curseForgeLink ? "unknown" : curseForgeLink
+
+	inputs.property("modid", modId)
+	inputs.property("modname", modName)
+	inputs.property("homepage", githubLink)
+	inputs.property("version", version)
+	inputs.property("sources", githubLink)
+	inputs.property("issues", githubIssuesLink)
+	inputs.property("modrinth", modrinthResLink)
+	inputs.property("curseforge", curseForgeResLink)
+
+	filesMatching("fabric.mod.json") {
+		expand(
+				modid : modId,
+				modname : modName,
+				homepage: githubLink,
+				version: version,
+				sources: githubLink,
+				issues: githubIssuesLink,
+				modrinth: modrinthResLink,
+				curseforge: curseForgeResLink
+		)
+	}
+}
+
+// === Java Compilation ===
+
+java {
+	withSourcesJar()
+	sourceCompatibility = JavaVersion.VERSION_21
+	targetCompatibility = JavaVersion.VERSION_21
+}
+
+tasks.withType(JavaCompile).configureEach {
+	options.release.set(21)
+	options.encoding = "UTF-8"
+	options.fork = true
+	options.forkOptions.jvmArgs = ['-Duser.language=en', '-Duser.country=US']
+}
+
+// === Jar Configuration ===
+
+tasks.withType(Jar).configureEach {
+	preserveFileTimestamps = false
+	reproducibleFileOrder = true
+	inputs.property("archivesName", archivesBaseName)
+	from("LICENSE") {
+		rename { "LICENSE_${archivesBaseName.toUpperCase()}" }
+	}
+}
+
+// === Modrinth Publishing ===
+
+def releaseNotesFile = file("RELEASE_NOTES.md")
+def releaseNotes = releaseNotesFile.exists() ? releaseNotesFile.text : "No release notes provided."
+
+modrinth {
+	token.set(modrinthToken)
+	projectId.set(modId)
+	versionNumber.set(version.toString())
+	versionName.set(formatedVersion)
+	versionType.set(modrinthPublishChannel)
+	uploadFile.set(tasks.remapJar)
+	additionalFiles.set([tasks.sourcesJar])
+	gameVersions.set(supportedMcVersions.split(",").collect { it.trim() })
+	loaders.set(['fabric'])
+	changelog.set(releaseNotes)
+}
+
+tasks.named("modrinth").configure {
+	onlyIf { shouldPublishToModrinth && (publishChannel != 'dev' || publishChannel == 'snap') }
+}
+
+// === Git Changelog ===
+
+tasks.named('gitChangelog', GitChangelogTask).configure {
+	file.set(file("CHANGELOG.md"))
+	templateContent.set("""
+# Changelog of [${modName}](${githubLink})
+This file documents all significant changes made in each version.
+
+---
+
+## Versioning
+
+Format: `MAJOR.MINOR.PATCH[-prerelease][+mc-version]`
+
+Pre-release identifiers indicate development stages:
+
+- `-snap`: snapshot builds, representing active development; may be incomplete, broken, or experimental  
+- `-alpha`: unstable and experimental  
+- `-beta`: feature-complete but may still contain bugs  
+- `-pre`: early pre-release builds focusing on final polishing and integration testing, may still receive significant changes  
+- `-rc`: release candidate, feature-complete and stable, intended for final verification before stable release  
+- `+mc-version`: specifies the Minecraft version the release was compiled against (e.g. `+${mcVersion}`)
+
+---
+
+{{#tags}}
+## {{#if @first}}${version}{{else}}{{name}}{{/if}} ({{tagDate}})
+
+{{#commits}}
+- {{messageTitle}} [author={{authorName}}] ([{{hash}}](${githubLink}/commit/{{hash}}))
+{{/commits}}
+
+---
+
+{{/tags}}
+
+*This changelog is generated automatically for each release.*
+""".stripIndent())
+}
+
+tasks.register("gitReleaseNotes", GitChangelogTask) {
+	group = "git Changelog"
+	description = "Generate RELEASE_NOTES.md with only current changes."
+	file.set(file("RELEASE_NOTES.md"))
+	templateContent.set("""
+{{#tags}}
+{{#if @first}}
+{{#commits}}
+- {{messageTitle}} [author={{authorName}}] ([{{hash}}](${githubLink}/commit/{{hash}}))
+{{/commits}}
+{{/if}}
+{{/tags}}
+""".stripIndent())
+}
+
+// === Changelog Cleaner ===
+
+tasks.register('generateChangelogs') {
+	group = 'publishing'
+	description = 'Generates CHANGELOG.md and RELEASE_NOTES.md files.'
+	doFirst {
+		assertPublishOnlyTask('generateChangelogs', publishChannel)
+	}
+	dependsOn('gitChangelog', 'gitReleaseNotes')
+	doLast {
+		['CHANGELOG.md', 'RELEASE_NOTES.md'].each { filename ->
+			def changelog = file(filename)
+			if (!changelog.exists()) return
+			changelog.text = changelog.readLines()
+					.findAll { !it.contains("[author=github-actions]") }
+					.collect { it.replaceAll(/\[author=[^]]+]/, "") }
+					.collect {
+						it.replaceAll(/\[([0-9a-fA-F]{8,})](\(\S+\))/, { _, hash, url -> "[${hash.take(8)}]${url}" })
+					}
+					.collect { formatVersion(modName, it) }
+					.collect { it.trim() }
+					.join(System.lineSeparator())
+		}
+	}
+}
+
+tasks.register('printVersion') {
+	doLast {
+		println project.version
+	}
+}
+
+tasks.register('printPublishChannel') {
+	doLast {
+		println publishChannel
+	}
+}
+
+tasks.register('printShouldPublishToGitHub') {
+	doLast {
+		println shouldPublishToGitHub
+	}
+}
+
+tasks.register('printShouldPublishToModrinth') {
+	doLast {
+		println shouldPublishToModrinth
+	}
+}
+
+tasks.register('printFormatedVersion') {
+	doLast {
+		println formatedVersion
+	}
+}

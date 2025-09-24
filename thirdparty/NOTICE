@@ -1,0 +1,8 @@
+git-changelog-gradle-plugin
+Copyright © 2015–2025 Tomas Bjerre
+Licensed under the Apache License, Version 2.0
+https://github.com/tomasbjerre/git-changelog-gradle-plugin
+
+The git-changelog-gradle-plugin is a build-time tool used solely during the project’s build process to generate
+CHANGELOG.md and RELEASE_NOTE.md files automatically. It is not included in the distributed mod binaries and
+does not affect the runtime behavior of the mod.
