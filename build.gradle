@@ -371,6 +371,8 @@ tasks.register('generateChangelogs') {
 			if (!changelog.exists()) return
 			changelog.text = changelog.readLines()
 					.findAll { !it.contains("[author=github-actions]") }
+					.findAll { !it.contains("[skip ci]") }
+					.findAll { !it.contains("[skip changelog]") }
 					.collect { it.replaceAll(/\[author=[^]]+]/, "") }
 					.collect {
 						it.replaceAll(/\[([0-9a-fA-F]{8,})](\(\S+\))/, { _, hash, url -> "[${hash.take(8)}]${url}" })
