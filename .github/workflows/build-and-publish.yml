@@ -89,13 +89,17 @@ jobs:
         if: steps.tag_exists.outputs.exists == 'false' && steps.meta.outputs.publish_github == 'true'
         run: |
           git tag ${{ steps.meta.outputs.version }}
-          git push origin ${{ steps.meta.outputs.version }}
 
       - name: Generate Changelogs
         if: ${{ steps.meta.outputs.publish_github == 'true' }}
         run: ./gradlew generateChangelogs
 
-      - name: Commit updated CHANGELOG.md [skip ci]
+      - name: Push Git tag
+        if: steps.tag_exists.outputs.exists == 'false' && steps.meta.outputs.publish_github == 'true'
+        run: |
+          git push origin ${{ steps.meta.outputs.version }}
+
+      - name: Commit updated CHANGELOG.md
         if: steps.tag_exists.outputs.exists == 'false' && steps.meta.outputs.publish_github == 'true'
         run: |
           git config user.name "github-actions"
