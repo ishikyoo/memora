@@ -134,7 +134,7 @@ def modmenuVersion = requireProperty("modmenu_version", false)
 def mavenGroup = requireProperty("maven_group", false)
 def modVersion = requireProperty("mod_version", false)
 def mcVersion = requireProperty("minecraft_version", false)
-def supportedMcVersions = requireProperty("supported_minecraft_versions", false);
+def supportedMcVersions = requireProperty("supported_minecraft_versions", false)
 
 def publishChannel = requireRestrictProperty("publish_channel", ALLOWED_PUBLISH_CHANNELS)
 def publishHasVersion = (publishChannel == 'dev' || publishChannel == 'snap' || publishChannel == 'release')
