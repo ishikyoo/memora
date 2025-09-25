@@ -75,10 +75,6 @@ jobs:
           echo "publish_github=$(./gradlew -q printShouldPublishToGitHub | tail -n 1)" >> $GITHUB_OUTPUT
           echo "publish_modrinth=$(./gradlew -q printShouldPublishToModrinth | tail -n 1)" >> $GITHUB_OUTPUT
 
-      - name: Generate Changelogs
-        if: ${{ steps.meta.outputs.publish_github == 'true' }}
-        run: ./gradlew generateChangelogs
-
       - name: Check if tag already exists
         if: ${{ steps.meta.outputs.publish_github == 'true' }}
         id: tag_exists
@@ -89,6 +85,16 @@ jobs:
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
 
+      - name: Create Git tag
+        if: steps.tag_exists.outputs.exists == 'false' && steps.meta.outputs.publish_github == 'true'
+        run: |
+          git tag ${{ steps.meta.outputs.version }}
+          git push origin ${{ steps.meta.outputs.version }}
+
+      - name: Generate Changelogs
+        if: ${{ steps.meta.outputs.publish_github == 'true' }}
+        run: ./gradlew generateChangelogs
+
       - name: Commit updated CHANGELOG.md [skip ci]
         if: steps.tag_exists.outputs.exists == 'false' && steps.meta.outputs.publish_github == 'true'
         run: |
@@ -97,12 +103,6 @@ jobs:
           git add CHANGELOG.md
           git diff --cached --quiet || git commit -m "Update CHANGELOG.md [skip ci]"
           git push
-
-      - name: Create Git tag
-        if: steps.tag_exists.outputs.exists == 'false' && steps.meta.outputs.publish_github == 'true'
-        run: |
-          git tag ${{ steps.meta.outputs.version }}
-          git push origin ${{ steps.meta.outputs.version }}
 
       - name: Create GitHub Release
         if: steps.tag_exists.outputs.exists == 'false' && steps.meta.outputs.publish_github == 'true'
