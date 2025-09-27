@@ -5,6 +5,7 @@ plugins {
 	id 'fabric-loom' version "${loom_version}"
 	id 'com.modrinth.minotaur' version '2.+'
 	id 'se.bjurr.gitchangelog.git-changelog-gradle-plugin' version "${git_changelog_version}"
+	id 'maven-publish'
 }
 
 // === Constants & Helpers ===
@@ -211,6 +212,8 @@ repositories {
 		name = "Modrinth"
 		url = uri("https://api.modrinth.com/maven")
 	}
+	mavenCentral()
+	mavenLocal()
 }
 
 // === Dependencies ===
@@ -220,8 +223,22 @@ dependencies {
 	mappings loom.officialMojangMappings()
 	modImplementation "net.fabricmc:fabric-loader:${loaderVersion}"
 	modImplementation "net.fabricmc.fabric-api:fabric-api:${fabricVersion}"
-	modCompileOnlyApi "maven.modrinth:modmenu:${modmenuVersion}"
+	modCompileOnly "maven.modrinth:modmenu:${modmenuVersion}"
 	modRuntimeOnly "maven.modrinth:modmenu:${modmenuVersion}"
+}
+
+// === GitHub Packages Publishing ===
+
+publishing {
+	publications {
+		create("mavenJava", MavenPublication) {
+			from components.java
+
+			groupId = mavenGroup
+			artifactId = archivesBaseName
+			version = project.version
+		}
+	}
 }
 
 // === Process Resources ===
